@@ -108,7 +108,7 @@ class NetClient(val queueSize: Int, val channelSize: Int, val host: String, val 
     var data = Array[Byte]()
     val promises = mutable.Queue[Promise[Data]]()
     var elem = sendQueue.poll()
-    while (elem != null) {
+    while (elem != null && data.length < maxBatchSize) {
       data ++= elem._1
       promises.enqueue(elem._2)
       elem = sendQueue.poll()
