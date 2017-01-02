@@ -1,7 +1,7 @@
 package me.binwang.sedis
 
 object RedisProtocol {
-  class RedisData
+  abstract class RedisData
   case class RedisString(value: String) extends RedisData
   case class RedisError(msg: String) extends RedisData
   case class RedisInteger(value: Int) extends RedisData
