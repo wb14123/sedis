@@ -9,13 +9,20 @@ class RedisDecoder extends NetDecoder[RedisData] {
   private var buffer = Array[Byte]()
   private var arrayLen: Option[Int] = None
   private var bulkLen: Option[Int] = None
-  private var arrays: Seq[RedisData] = Seq()
+  private var childData: Seq[RedisData] = Seq()
+  private var childDecoder: Option[RedisDecoder] = None
 
   private def clear() = {
     buffer = Array[Byte]()
     arrayLen = None
     bulkLen = None
-    arrays = Seq()
+    childData = Seq()
+    childDecoder = None
+  }
+
+  private implicit class redisBytes(data: Array[Byte]) {
+    // remove \r\n in the end
+    def trimEnd: String = new String(data.take(data.length - 2))
   }
 
   /**
@@ -24,62 +31,52 @@ class RedisDecoder extends NetDecoder[RedisData] {
     * @return The result if the data has been resolved.
     */
   private def tryDecode(): Option[RedisData] = {
-
-    // TODO: nested array
-
-    def tail2str() = {
-      new String(buffer.tail.take(buffer.length - 3))
-    }
-
-    val result =
-      if (bulkLen.nonEmpty) {
-        if (buffer.length - 2 == bulkLen.get) {
-          bulkLen = None
-          Some(RedisString(new String(buffer.take(buffer.length - 2))))
-        } else {
-          None
-        }
+    if (bulkLen.nonEmpty) {
+      if (bulkLen.get == buffer.length - 2) {
+        Some(RedisString(buffer.trimEnd))
       } else {
-        buffer.head match {
-          case '+' => Some(RedisString(tail2str()))
-          case '-' => Some(RedisError(tail2str()))
-          case ':' => Some(RedisInteger(tail2str().toInt))
-          case '$' =>
-            bulkLen = Some(tail2str().toInt)
-            buffer = Array[Byte]()
-            None
-          case '*' =>
-            arrayLen = Some(tail2str().toInt)
-            buffer = Array[Byte]()
-            None
-        }
+        None
       }
-
-    (arrayLen, result) match {
-      case (_, None) => None
-      case (None, r) => buffer = Array[Byte]() ; r
-      case (Some(len), Some(r)) =>
-        buffer = Array[Byte]()
-        arrays :+= r
-        if (arrays.length == len) {
-          Some(RedisArray(arrays))
-        } else {
+    } else {
+      buffer.head match {
+        case '+' => Some(RedisString(buffer.tail.trimEnd))
+        case '-' => Some(RedisError(buffer.tail.trimEnd))
+        case ':' => Some(RedisInteger(buffer.tail.trimEnd.toInt))
+        case '$' =>
+          bulkLen = Some(buffer.tail.trimEnd.toInt)
+          buffer = Array[Byte]()
           None
-        }
+        case '*' =>
+          arrayLen = Some(buffer.tail.trimEnd.toInt)
+          childDecoder = Some(new RedisDecoder)
+          buffer = Array[Byte]()
+          None
+      }
     }
   }
 
   override def send(byte: Byte): Try[Option[RedisData]] = {
-    buffer :+= byte
-    if (buffer.endsWith(Array('\r', '\n'))) {
-      Try(tryDecode()) match {
-        case Failure(e) => clear(); Failure(e)
-        case Success(None) => Success(None)
-        case Success(r) => clear(); Success(r)
+    if (arrayLen.nonEmpty) {
+      childDecoder.get.send(byte) match {
+        case Success(Some(result)) =>
+          childData :+= result
+          if (childData.length == arrayLen.get) {
+            Success(Some(RedisArray(childData)))
+          } else {
+            Success(None)
+          }
+        case other => other
       }
     } else {
-      Success(None)
+      buffer :+= byte
+      if (buffer.endsWith(Array('\r', '\n'))) {
+        Try(tryDecode())
+      } else {
+        Success(None)
+      }
+    } match {
+      case Success(None) => Success(None)
+      case other => clear(); other
     }
   }
-
 }
