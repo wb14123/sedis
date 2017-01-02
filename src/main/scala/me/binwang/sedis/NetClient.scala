@@ -7,18 +7,20 @@ import java.util.concurrent.ConcurrentLinkedQueue
 
 import scala.collection.mutable
 import scala.concurrent.{Future, Promise}
+import scala.util.{Failure, Success}
 
-class NetClient(val queueSize: Int, val channelSize: Int, val host: String, val port: Int)
-    extends Thread {
+
+class NetClient[DecodeT](val queueSize: Int, val channelSize: Int, val host: String,
+    val port: Int, decoderFactory: () => NetDecoder[DecodeT]) extends Thread {
 
   type Data = Array[Byte]
 
   val bufferSize = 1024
   val maxBatchSize = 1024
 
-  private val sendQueue = new ConcurrentLinkedQueue[(Data, Promise[Data])]()
-  private var promiseMap = Map[Int, mutable.Queue[Promise[Data]]]()
-  private var readMap = Map[Int, Data]()
+  private val sendQueue = new ConcurrentLinkedQueue[(Data, Promise[DecodeT])]()
+  private var promiseMap = Map[Int, mutable.Queue[Promise[DecodeT]]]()
+  private var readMap = Map[Int, NetDecoder[DecodeT]]()
   private var writeMap = Map[Int, ByteBuffer]()
   private val freeConnQueue = new ConcurrentLinkedQueue[SocketChannel]()
 
@@ -59,15 +61,21 @@ class NetClient(val queueSize: Int, val channelSize: Int, val host: String, val 
     conn.connect(new InetSocketAddress(host, port))
     conn.configureBlocking(false)
     conn.register(selector, SelectionKey.OP_READ)
+    readMap += (conn.hashCode() -> decoderFactory())
     freeConnQueue.add(conn)
   }
 
 
-  def send(data: Data): Future[Data] = {
-    val promise = Promise[Data]()
+  def send(data: Data): Future[DecodeT] = {
+    val promise = Promise[DecodeT]()
     sendQueue.add((data, promise))
     val conn = freeConnQueue.poll()
     if (conn != null) {
+      /*
+       This operation will run on the thread which invoke this method.
+       But this doesn't block and will only encode very few messages.
+       So that should be OK.
+      */
       writeConn(conn)
     }
     promise.future
@@ -76,31 +84,29 @@ class NetClient(val queueSize: Int, val channelSize: Int, val host: String, val 
 
   private def readConn(conn: SocketChannel): Unit = {
     val connId = conn.hashCode()
-    var data = readMap.getOrElse(connId, Array[Byte]())
-    val buffer = ByteBuffer.allocate(1024)
+    val decoder = readMap(connId)
+    val buffer = ByteBuffer.allocate(bufferSize)
     var readSize = 1
     while(readSize != 0) {
       readSize = conn.read(buffer)
       for(i <- 0 until readSize) {
-        val byte = buffer.get(i)
-        data :+= byte
-        // read a row
-        if (data.length > 1 && data(data.length - 2) == '\r' && data(data.length - 1) == '\n') {
-          val promises = promiseMap(connId)
-          val promise = promises.dequeue()
-          promise.success(data)
-          data = Array[Byte]()
+        val promises = promiseMap(connId)
+        decoder.send(buffer.get(i)) match {
+          case Failure(e) =>
+            promises.dequeue().failure(e)
+          case Success(None) =>
+          case Success(Some(result)) =>
+            promises.dequeue().success(result)
         }
       }
       buffer.clear()
     }
-    readMap += (connId -> data)
   }
 
 
   private def writeConn(conn: SocketChannel): Unit = {
     var data = Array[Byte]()
-    val promises = mutable.Queue[Promise[Data]]()
+    val promises = mutable.Queue[Promise[DecodeT]]()
     var elem = sendQueue.poll()
     while (elem != null && data.length < maxBatchSize) {
       data ++= elem._1
