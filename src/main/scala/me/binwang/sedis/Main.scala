@@ -16,10 +16,16 @@ object Main {
     }
   }
 
+  def debugLoop(cmd: String): Future[Nothing] = {
+    client.send(RedisEncoder.encode(cmd.getBytes())).flatMap { res =>
+      debugLoop(cmd)
+    }
+  }
+
   def main(args: Array[String]): Unit = {
-    debugRedis("PING")
-    debugRedis("SET key 1")
-    debugRedis("GET key")
+    for (_ <- 1 to 2028) {
+      debugLoop("SET key 1")
+    }
     Thread.sleep(1000)
   }
 
