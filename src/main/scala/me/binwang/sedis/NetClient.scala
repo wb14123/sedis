@@ -131,8 +131,8 @@ class NetClient[DecodeT](val channelSize: Int, val host: String,
       conn.write(buffer)
       /*
       Bytes in buffer are not all written into the connection, so may be the connection
-      is not writable for now. Will write register it into the selector and write the remained
-      buffer on the next write.
+      is not writable for now. Register it into the selector and write the remained
+      buffer on the next writable time.
        */
       if (buffer.hasRemaining) {
         conn.register(selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE)
