@@ -10,7 +10,7 @@ import scala.concurrent.{Future, Promise}
 import scala.util.{Failure, Success}
 
 
-class NetClient[DecodeT](val queueSize: Int, val channelSize: Int, val host: String,
+class NetClient[DecodeT](val channelSize: Int, val host: String,
     val port: Int, decoderFactory: () => NetDecoder[DecodeT]) extends Thread {
 
   type Data = Array[Byte]
@@ -25,6 +25,15 @@ class NetClient[DecodeT](val queueSize: Int, val channelSize: Int, val host: Str
   private val freeConnQueue = new ConcurrentLinkedQueue[SocketChannel]()
 
   private val selector = Selector.open()
+
+  private var sendSize = 0L
+  private var sendTimes = 0L
+
+  def averageBatchSize: Double = sendSize / sendTimes.toDouble
+
+  for (_ <- 1 to channelSize) {
+    newConn()
+  }
 
   override def run(): Unit = {
     while(true) {
@@ -55,7 +64,7 @@ class NetClient[DecodeT](val queueSize: Int, val channelSize: Int, val host: Str
     }
   }
 
-  def newConn(): Unit = {
+  private def newConn(): Unit = {
     val conn = SocketChannel.open()
     conn.setOption(StandardSocketOptions.SO_KEEPALIVE, new java.lang.Boolean(true))
     conn.connect(new InetSocketAddress(host, port))
@@ -109,6 +118,7 @@ class NetClient[DecodeT](val queueSize: Int, val channelSize: Int, val host: Str
     val promises = mutable.Queue[Promise[DecodeT]]()
     var elem = sendQueue.poll()
     while (elem != null && data.length < maxBatchSize) {
+      sendSize += 1L
       data ++= elem._1
       promises.enqueue(elem._2)
       elem = sendQueue.poll()
@@ -116,6 +126,7 @@ class NetClient[DecodeT](val queueSize: Int, val channelSize: Int, val host: Str
     if (data.isEmpty) {
       freeConnQueue.add(conn)
     } else {
+      sendTimes += 1L
       promiseMap += (conn.hashCode() -> promises)
       val buffer = ByteBuffer.wrap(data)
       conn.write(buffer)
