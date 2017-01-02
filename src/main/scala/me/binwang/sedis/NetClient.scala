@@ -19,21 +19,14 @@ class NetClient[DecodeT](val channelSize: Int, val host: String,
   val maxBatchSize = 1024
 
   private val sendQueue = new ConcurrentLinkedQueue[(Data, Promise[DecodeT])]()
-  private var promiseMap = Map[Int, mutable.Queue[Promise[DecodeT]]]()
-  private var readMap = Map[Int, NetDecoder[DecodeT]]()
-  private var writeMap = Map[Int, ByteBuffer]()
   private val freeConnQueue = new ConcurrentLinkedQueue[SocketChannel]()
-
   private val selector = Selector.open()
-
-  private var sendSize = 0L
-  private var sendTimes = 0L
-
-  def averageBatchSize: Double = sendSize / sendTimes.toDouble
-
-  for (_ <- 1 to channelSize) {
-    newConn()
-  }
+  private val channels = (1 to channelSize).map { _ => newConn()}
+  private val promiseMap = channels.map(conn =>
+    conn.hashCode() -> mutable.Queue[Promise[DecodeT]]()).toMap
+  private val readMap = channels.map(conn =>
+    conn.hashCode() -> decoderFactory()).toMap
+  private val writeMap = mutable.Map[Int, ByteBuffer]()
 
   override def run(): Unit = {
     while(true) {
@@ -44,8 +37,11 @@ class NetClient[DecodeT](val channelSize: Int, val host: String,
           if (key.isReadable) {
             val conn = key.channel().asInstanceOf[SocketChannel]
             readConn(conn)
-            writeConn(conn)
+            if (promiseMap(conn.hashCode()).isEmpty) {
+              writeConn(conn)
+            }
           } else if (key.isWritable) {
+            println("writable")
             val conn = key.channel().asInstanceOf[SocketChannel]
             val buffer = writeMap.get(conn.hashCode())
             if (buffer.isEmpty) {
@@ -64,14 +60,14 @@ class NetClient[DecodeT](val channelSize: Int, val host: String,
     }
   }
 
-  private def newConn(): Unit = {
+  private def newConn(): SocketChannel = {
     val conn = SocketChannel.open()
     conn.setOption(StandardSocketOptions.SO_KEEPALIVE, new java.lang.Boolean(true))
     conn.connect(new InetSocketAddress(host, port))
     conn.configureBlocking(false)
     conn.register(selector, SelectionKey.OP_READ)
-    readMap += (conn.hashCode() -> decoderFactory())
     freeConnQueue.add(conn)
+    conn
   }
 
 
@@ -96,10 +92,10 @@ class NetClient[DecodeT](val channelSize: Int, val host: String,
     val decoder = readMap(connId)
     val buffer = ByteBuffer.allocate(bufferSize)
     var readSize = 1
+    val promises = promiseMap(connId)
     while(readSize != 0) {
       readSize = conn.read(buffer)
       for(i <- 0 until readSize) {
-        val promises = promiseMap(connId)
         decoder.send(buffer.get(i)) match {
           case Failure(e) =>
             promises.dequeue().failure(e)
@@ -113,21 +109,24 @@ class NetClient[DecodeT](val channelSize: Int, val host: String,
   }
 
 
+  /*
+  This method is invoked both by the selector thread and user thread,
+  so the operations on this should be thread safe on each conn.
+   */
   private def writeConn(conn: SocketChannel): Unit = {
     var data = Array[Byte]()
-    val promises = mutable.Queue[Promise[DecodeT]]()
+    val promises = promiseMap(conn.hashCode())
     var elem = sendQueue.poll()
-    while (elem != null && data.length < maxBatchSize) {
-      sendSize += 1L
+    var alreadySize = 0
+    while (elem != null && alreadySize < maxBatchSize) {
       data ++= elem._1
       promises.enqueue(elem._2)
       elem = sendQueue.poll()
+      alreadySize += 1
     }
     if (data.isEmpty) {
       freeConnQueue.add(conn)
     } else {
-      sendTimes += 1L
-      promiseMap += (conn.hashCode() -> promises)
       val buffer = ByteBuffer.wrap(data)
       conn.write(buffer)
       /*
@@ -138,6 +137,7 @@ class NetClient[DecodeT](val channelSize: Int, val host: String,
       if (buffer.hasRemaining) {
         println("buffer is remaining")
         conn.register(selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE)
+        // TODO: this operation is not thread safe
         writeMap += (conn.hashCode() -> buffer)
       } else {
         buffer.clear()
