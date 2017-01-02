@@ -5,8 +5,7 @@ import scala.concurrent.Future
 
 object Main {
 
-  val client = new NetClient(1024, 1024, "localhost", 6379, () => new RedisDecoder)
-  client.newConn()
+  val client = new NetClient(10, "localhost", 6379, () => new RedisDecoder)
   client.start()
   val decoder = new RedisDecoder
 
@@ -23,10 +22,11 @@ object Main {
   }
 
   def main(args: Array[String]): Unit = {
-    for (_ <- 1 to 2028) {
+    for (_ <- 1 to 202400) {
       debugLoop("SET key 1")
     }
-    Thread.sleep(1000)
+    Thread.sleep(10000)
+    println(client.averageBatchSize)
   }
 
 }
