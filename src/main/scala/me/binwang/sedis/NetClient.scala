@@ -3,7 +3,7 @@ package me.binwang.sedis
 import java.net.{InetSocketAddress, StandardSocketOptions}
 import java.nio.ByteBuffer
 import java.nio.channels.{SelectionKey, Selector, SocketChannel}
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue}
 
 import scala.collection.mutable
 import scala.concurrent.{Future, Promise}
@@ -26,7 +26,7 @@ class NetClient[DecodeT](val channelSize: Int, val host: String,
     conn.hashCode() -> mutable.Queue[Promise[DecodeT]]()).toMap
   private val readMap = channels.map(conn =>
     conn.hashCode() -> decoderFactory()).toMap
-  private val writeMap = mutable.Map[Int, ByteBuffer]()
+  private val writeMap = new ConcurrentHashMap[Int, ByteBuffer]()
 
   override def run(): Unit = {
     while(true) {
@@ -43,16 +43,16 @@ class NetClient[DecodeT](val channelSize: Int, val host: String,
           } else if (key.isWritable) {
             println("writable")
             val conn = key.channel().asInstanceOf[SocketChannel]
-            val buffer = writeMap.get(conn.hashCode())
-            if (buffer.isEmpty) {
+            if (!writeMap.contains(conn.hashCode())) {
               throw new Exception("Error to get buffer to write")
             }
-            conn.write(buffer.get)
-            if (!buffer.get.hasRemaining) {
-              buffer.get.clear()
+            val buffer = writeMap.get(conn.hashCode())
+            conn.write(buffer)
+            if (!buffer.hasRemaining) {
+              buffer.clear()
               conn.register(selector, SelectionKey.OP_READ)
             }
-            writeMap += (conn.hashCode() -> buffer.get)
+            writeMap.put(conn.hashCode(), buffer)
           }
           keysIter.remove()
         }
@@ -135,10 +135,8 @@ class NetClient[DecodeT](val channelSize: Int, val host: String,
       buffer on the next write.
        */
       if (buffer.hasRemaining) {
-        println("buffer is remaining")
         conn.register(selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE)
-        // TODO: this operation is not thread safe
-        writeMap += (conn.hashCode() -> buffer)
+        writeMap.put(conn.hashCode(), buffer)
       } else {
         buffer.clear()
       }
