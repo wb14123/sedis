@@ -86,14 +86,8 @@ class NetClient(val queueSize: Int, val channelSize: Int, val host: String, val 
         data :+= byte
         // read a row
         if (data.length > 1 && data(data.length - 2) == '\r' && data(data.length - 1) == '\n') {
-          val promises = promiseMap.get(connId)
-          if (promises.isEmpty) {
-            throw new Exception("Cannot find promise for data")
-          }
-          val promise = promises.get.dequeue()
-          if (promise == null) {
-            throw new Exception("Cannot find promise for data")
-          }
+          val promises = promiseMap(connId)
+          val promise = promises.dequeue()
           promise.success(data)
           data = Array[Byte]()
         }

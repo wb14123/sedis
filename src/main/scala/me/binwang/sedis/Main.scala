@@ -1,23 +1,25 @@
 package me.binwang.sedis
 
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.Future
 
 object Main {
+  val client = new NetClient(1024, 1024, "localhost", 6379)
+  client.newConn()
+  client.start()
+  val decoder = new RedisDecoder
+
+  def debugRedis(cmd: String): Future[Unit] = {
+    client.send(RedisEncoder.encode(cmd.getBytes())).map { res =>
+      println(res)
+      println(decoder.decode(res))
+    }
+  }
 
   def main(args: Array[String]): Unit = {
-    val client = new NetClient(1024, 1024, "localhost", 8080)
-    client.newConn()
-    client.start()
-    client.send("GET 1\r\n".toCharArray.map(_.toByte)).map { res =>
-      println(res)
-      println(new String(res))
-    }
-    println("send 1")
-    client.send("GET 2\r\n".toCharArray.map(_.toByte)).map { res =>
-      println(res)
-      println(new String(res))
-    }
-    println("send 2")
+    debugRedis("PING")
+    debugRedis("SET key 1")
+    debugRedis("GET key")
     Thread.sleep(1000)
   }
 
