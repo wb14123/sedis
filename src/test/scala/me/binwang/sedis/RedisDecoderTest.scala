@@ -24,7 +24,7 @@ class RedisDecoderTest extends FlatSpec with Matchers {
     decoder.decode("$3\r\nFOO\r\n".getBytes).get should equal(RedisString("FOO"))
   }
 
-  it should "ecode string bulks with special chars" in {
+  it should "encode string bulks with special chars" in {
     val decoder = new RedisDecoder
     decoder.decode("$5\r\nFOO\r\n\r\n".getBytes).get should equal(RedisString("FOO\r\n"))
   }
