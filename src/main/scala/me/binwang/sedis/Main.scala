@@ -26,7 +26,6 @@ object Main {
       debugLoop("SET key 1")
     }
     Thread.sleep(10000)
-    println(client.averageBatchSize)
   }
 
 }
